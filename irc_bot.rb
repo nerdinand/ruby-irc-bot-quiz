@@ -6,6 +6,9 @@
 # standard library in this file
 require "socket"
 
+require_relative 'trivia_bot_question_parser'
+require_relative 'mox_quizz_question_parser'
+
 # We declare an instance variable called "joined" with the value false
 @joined = false
 
@@ -51,6 +54,8 @@ end
 # The main method of our bot. It connects to the server and then keeps the connection
 # open in a loop and reacts to different kinds of incoming messages.
 def run
+  parse_quiz_questions
+
   # First thing to do is to connect to the server
   connect
 
@@ -91,7 +96,97 @@ end
 # This method gets called, whenever a message is sent to our IRC channel. In it you can react to
 # the users' inputs in whatever way you like...
 def handle_channel_message(message)
+  if (match = message.match(/^:(\w+)!.*?:(.*)$/))
+    captures = match.captures
+    nickname = captures[0]
+    message = captures[1].chomp
 
+    if mentioned?(message) && message.downcase.include?('hello')
+      send_channel_message("Why hello there, #{nickname}!")
+    elsif (match = message.match(/^!(\w+) ?(.*)$/))
+      captures = match.captures
+      command = captures[0]
+      arguments = captures[1]
+
+      command_method_name = "handle_command_#{command}"
+
+      if respond_to?(command_method_name, true)
+        send(command_method_name, arguments)
+      end
+    else
+      if @quiz_running
+        process_quiz_guess(nickname, message)
+      end
+    end
+  else
+    # weird stuff is happening, we'll ignore this
+  end
+end
+
+def mentioned?(message)
+  message.include?(@name)
+end
+
+def send_channel_message(message)
+  irc_send("PRIVMSG #{@channel} :#{message}")
+end
+
+def handle_command_time(arguments)
+  send_channel_message("The current time is #{Time.now}")
+end
+
+def parse_quiz_questions
+  @quiz_items = []
+
+  Dir.glob("quiz_data/triviabot/*") do |file|
+    puts "Parsing #{file}"
+    @quiz_items += TriviaBotQuestionParser.new(file).parse
+  end
+
+  Dir.glob("quiz_data/moxquizz/*") do |file|
+    puts "Parsing #{file}"
+    @quiz_items += MoxQuizzQuestionParser.new(file).parse
+  end
+
+  puts "Parsed #{@quiz_items.size} questions."
+end
+
+def ask_quiz_question
+  @current_quiz_item = @quiz_items.sample
+  @current_quiz_item.reset
+  send_channel_message(@current_quiz_item.question)
+  puts "Answers are: #{@current_quiz_item.answers}"
+  puts "Tips are: #{@current_quiz_item.tips}"
+end
+
+def process_quiz_guess(username, message)
+  correct = @current_quiz_item.correct?(message)
+
+  if correct
+    @score[username] += 1
+
+    send_channel_message("#{username} is correct! #{message} is the right answer! #{username} has #{@score[username]} points.")
+    ask_quiz_question
+  end
+end
+
+def handle_command_startquiz(arguments)
+  return if @quiz_running
+
+  send_channel_message("Quiz is starting!")
+  ask_quiz_question
+  @quiz_running = true
+end
+
+def handle_command_stopquiz(arguments)
+  return unless @quiz_running
+
+  @quiz_running = false
+  send_channel_message("Quiz is stopped.")
+end
+
+def handle_command_tip(arguments)
+  send_channel_message("Here's a tip for you: #{@current_quiz_item.give_tip}")
 end
 
 # The host name of the IRC server we want to connect to
@@ -105,6 +200,9 @@ end
 
 # The name of our channel we want to join on the IRC server
 @channel = "#rubymonstas"
+
+@quiz_running = false
+@score = Hash.new(0)
 
 # After setting all the variables and defining the necessary methods, we can call the "run" method,
 # which will start our bot and make the magic happen!
